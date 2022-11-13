@@ -1368,6 +1368,53 @@ func TestRegisterAndUnregisterBodyDecoder(t *testing.T) {
 	}, err)
 }
 
+func TestRegisterBodyDecoder_WithSuffix(t *testing.T) {
+	var decoder BodyDecoder
+	decoder = func(body io.Reader, h http.Header, schema *openapi3.SchemaRef, encFn EncodingFn) (decoded interface{}, err error) {
+		var data []byte
+		if data, err = ioutil.ReadAll(body); err != nil {
+			return
+		}
+		return strings.Split(string(data), ","), nil
+	}
+	contentTypeWithSuffix := "text/*+csv"
+
+	RegisterBodyDecoder(contentTypeWithSuffix, decoder)
+	require.Equal(t, fmt.Sprintf("%v", decoder), fmt.Sprintf("%v", RegisteredBodyDecoder(contentTypeWithSuffix)))
+
+	happyPath := []string{"text/csv", "text/abc+csv", "text/*", "text/*+csv"}
+	for _, ct := range happyPath {
+		t.Run("when "+ct+", it matches", func(t *testing.T) {
+			h := make(http.Header)
+			h.Set(headerCT, ct)
+
+			body := strings.NewReader("foo,bar")
+			schema := openapi3.NewArraySchema().WithItems(openapi3.NewStringSchema()).NewRef()
+			encFn := func(string) *openapi3.Encoding { return nil }
+			_, got, err := decodeBody(body, h, schema, encFn)
+
+			require.NoError(t, err)
+			require.Equal(t, []string{"foo", "bar"}, got)
+		})
+	}
+
+	sadPath := []string{"application/csv", "invalid"}
+	for _, ct := range sadPath {
+		t.Run("when "+ct+", it does not match", func(t *testing.T) {
+			h := make(http.Header)
+			h.Set(headerCT, ct)
+
+			body := strings.NewReader("foo,bar")
+			schema := openapi3.NewArraySchema().WithItems(openapi3.NewStringSchema()).NewRef()
+			encFn := func(string) *openapi3.Encoding { return nil }
+			_, got, err := decodeBody(body, h, schema, encFn)
+
+			fmt.Printf("got: %v\n", got)
+			require.Error(t, err)
+		})
+	}
+}
+
 func matchParseError(got, want error) bool {
 	wErr, ok := want.(*ParseError)
 	if !ok {

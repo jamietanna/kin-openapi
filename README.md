@@ -134,6 +134,8 @@ func main() {
 
 	// Register a body's decoder for content type "application/xml".
 	openapi3filter.RegisterBodyDecoder("application/xml", xmlBodyDecoder)
+	// Register a body's decoder for content types "application/json", "application/vnd.api+json", etc
+	openapi3filter.RegisterBodyDecoder("application/*+json", jsonBodyDecoder)
 
 	// Now you can validate HTTP request that contains a body with content type "application/xml".
 	requestValidationInput := &openapi3filter.RequestValidationInput{

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	contentnegotiation "gitlab.com/jamietanna/content-negotiation-go"
 	"gopkg.in/yaml.v3"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -842,7 +843,11 @@ type BodyDecoder func(io.Reader, http.Header, *openapi3.SchemaRef, EncodingFn) (
 // By default, there is content type "application/json" is supported only.
 var bodyDecoders = make(map[string]BodyDecoder)
 
+var bodyDecoderNegotiator *contentnegotiation.Negotiator
+
 // RegisteredBodyDecoder returns the registered body decoder for the given content type.
+//
+// contentType can be a full contentType such as `????
 //
 // If no decoder was registered for the given content type, nil is returned.
 // This call is not thread-safe: body decoders should not be created/destroyed by multiple goroutines.
@@ -858,6 +863,16 @@ func RegisteredBodyDecoder(contentType string) BodyDecoder {
 func RegisterBodyDecoder(contentType string, decoder BodyDecoder) {
 	if contentType == "" {
 		panic("contentType is empty")
+	}
+	mt := contentnegotiation.NewMediaType(contentType)
+	if mt == nil {
+		panic("contentType provided was not valid")
+	}
+	if mt.IsWildcardType() {
+		panic("contentType cannot be a wildcard type")
+	}
+	if mt.IsWildcardSubType() && mt.GetSubTypeSuffix() == "" {
+		panic("contentType cannot be a wildcard subtype")
 	}
 	if decoder == nil {
 		panic("decoder is not defined")
@@ -876,6 +891,16 @@ func UnregisterBodyDecoder(contentType string) {
 	delete(bodyDecoders, contentType)
 }
 
+func setNegotiator() {
+	keys := make([]string, 0, len(bodyDecoders))
+	for k := range bodyDecoders {
+		keys = append(keys, k)
+	}
+
+	negotiator := contentnegotiation.NewNegotiator(keys...)
+	bodyDecoderNegotiator = &negotiator
+}
+
 var headerCT = http.CanonicalHeaderKey("Content-Type")
 
 const prefixUnsupportedCT = "unsupported content type"
@@ -887,25 +912,37 @@ func decodeBody(body io.Reader, header http.Header, schema *openapi3.SchemaRef, 
 	interface{},
 	error,
 ) {
+	if bodyDecoderNegotiator == nil {
+		setNegotiator()
+	}
+
 	contentType := header.Get(headerCT)
 	if contentType == "" {
 		if _, ok := body.(*multipart.Part); ok {
 			contentType = "text/plain"
 		}
 	}
-	mediaType := parseMediaType(contentType)
-	decoder, ok := bodyDecoders[mediaType]
+	// TODO: create a negotiator,
+	mediaType, _, err := bodyDecoderNegotiator.Negotiate(contentType)
+	if err != nil {
+		return "", nil, &ParseError{
+			Kind:   KindUnsupportedFormat,
+			Reason: fmt.Sprintf("%s %q", prefixUnsupportedCT, contentType),
+		}
+	}
+
+	decoder, ok := bodyDecoders[mediaType.String()]
 	if !ok {
 		return "", nil, &ParseError{
 			Kind:   KindUnsupportedFormat,
-			Reason: fmt.Sprintf("%s %q", prefixUnsupportedCT, mediaType),
+			Reason: fmt.Sprintf("%s %q", prefixUnsupportedCT, mediaType.String()),
 		}
 	}
 	value, err := decoder(body, header, schema, encFn)
 	if err != nil {
 		return "", nil, err
 	}
-	return mediaType, value, nil
+	return mediaType.String(), value, nil
 }
 
 func init() {
